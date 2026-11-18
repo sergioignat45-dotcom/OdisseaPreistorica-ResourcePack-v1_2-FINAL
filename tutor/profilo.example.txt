@@ -1,0 +1,11 @@
+Copia questo file in "profilo.txt" e scrivi qui, con parole semplici, quello che il tutor deve sapere.
+Il file viene letto a ogni messaggio: se lo modifichi, il tutor ne tiene conto subito (non serve riavviare).
+Tutto quello che scrivi qui viene inviato all'intelligenza artificiale insieme alla conversazione:
+non metterci cognome, indirizzo, telefono o altri dati personali.
+
+Esempi (cancella e sostituisci):
+- Va in terza media e a giugno ha l'esame. La seconda lingua è il francese.
+- In matematica fa fatica con le equazioni e con i problemi di geometria solida.
+- In italiano le piace scrivere, ma sbaglia spesso i congiuntivi.
+- Il lunedì ha la verifica di storia sulla Seconda guerra mondiale.
+- Si distrae facilmente: meglio spiegazioni brevi e tanti piccoli esercizi.

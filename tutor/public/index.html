@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eaf1ff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Studiamo insieme</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Icone (stile "linea") riutilizzate nei pulsanti -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4M8 23h8"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-flip" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <header class="top">
+    <div class="brand"><span class="dot"></span><span id="tutor-name">Prof</span><span id="demo-badge" class="badge" hidden>demo</span></div>
+    <div class="top-actions">
+      <button class="icon-btn" id="btn-history" aria-label="Cronologia della conversazione" title="Cronologia"><svg class="ic"><use href="#i-chat"/></svg></button>
+      <button class="icon-btn" id="btn-settings" aria-label="Impostazioni" title="Impostazioni"><svg class="ic"><use href="#i-sliders"/></svg></button>
+      <button class="icon-btn" id="btn-new" aria-label="Nuova lezione" title="Nuova lezione"><svg class="ic"><use href="#i-plus"/></svg></button>
+    </div>
+  </header>
+
+  <nav class="chips" id="subjects" aria-label="Materia"></nav>
+
+  <main class="layout">
+    <section class="stage" aria-live="polite">
+      <div id="avatar" class="avatar" aria-hidden="true"></div>
+      <div id="status" class="status" data-phase="idle">Tocca il microfono e parla!</div>
+      <p id="caption" class="caption"></p>
+      <p id="heard" class="heard"></p>
+    </section>
+
+    <aside class="board-wrap" id="board-wrap" data-empty="true">
+      <div class="board-head">
+        <span>Lavagna</span>
+        <button class="icon-btn small" id="btn-board-close" aria-label="Chiudi la lavagna"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="board" class="board"></div>
+      <div class="board-empty">Qui il tutor scrive formule, schemi e parole nuove.</div>
+    </aside>
+  </main>
+
+  <div id="attach" class="attach" hidden>
+    <img id="attach-img" alt="Foto pronta da inviare">
+    <span>Foto pronta. Ora dimmi cosa vuoi fare!</span>
+    <button class="icon-btn small" id="attach-remove" aria-label="Togli la foto"><svg class="ic"><use href="#i-x"/></svg></button>
+  </div>
+
+  <form id="typebar" class="typebar" hidden autocomplete="off">
+    <input id="type-input" type="text" placeholder="Scrivi qui…" enterkeyhint="send" maxlength="1000" aria-label="Scrivi un messaggio">
+    <button class="icon-btn send" type="submit" aria-label="Invia"><svg class="ic"><use href="#i-send"/></svg></button>
+  </form>
+
+  <footer class="controls">
+    <button class="round-btn" id="btn-cam" aria-label="Mostra il quaderno con la fotocamera"><svg class="ic"><use href="#i-camera"/></svg><span>Quaderno</span></button>
+    <button class="mic" id="btn-mic" data-phase="idle" aria-label="Parla"><svg class="ic" id="mic-icon"><use href="#i-mic"/></svg><span id="mic-label">Parla</span></button>
+    <div class="side-btns">
+      <button class="round-btn" id="btn-type" aria-label="Scrivi invece di parlare"><svg class="ic"><use href="#i-keyboard"/></svg><span>Scrivi</span></button>
+      <button class="round-btn" id="btn-repeat" aria-label="Ripeti l'ultima risposta"><svg class="ic"><use href="#i-repeat"/></svg><span>Ripeti</span></button>
+    </div>
+  </footer>
+</div>
+
+<!-- Schermata iniziale: serve un tocco per far partire audio e microfono -->
+<div id="start" class="overlay">
+  <form class="card" id="start-form">
+    <div id="start-avatar" class="avatar small"></div>
+    <h1 id="start-title">Ciao! Studiamo insieme?</h1>
+    <p class="muted">Io sono un tutor virtuale: puoi parlarmi, scrivermi o mostrarmi una pagina del quaderno.</p>
+    <label class="field">Come ti chiami? <small>(facoltativo, solo il nome)</small>
+      <input id="start-name" type="text" maxlength="30" autocomplete="off" placeholder="Il tuo nome">
+    </label>
+    <label class="field" id="code-row" hidden>Codice di accesso
+      <input id="start-code" type="password" autocomplete="off" placeholder="Te lo dà chi ha installato l'app">
+    </label>
+    <button class="primary" id="start-btn" type="submit">Iniziamo!</button>
+    <p class="note">Sono un'intelligenza artificiale: se non sono sicuro di qualcosa, controlla sul libro o chiedi alla tua prof.
+      Non scrivere dati personali (cognome, indirizzo, telefono). La fotocamera si accende solo quando premi «Quaderno».</p>
+    <p class="warn" id="compat-note" hidden></p>
+  </form>
+</div>
+
+<!-- Fotocamera -->
+<div id="cam" class="overlay dark" hidden>
+  <div class="cam-box">
+    <video id="cam-video" playsinline muted></video>
+    <img id="cam-still" alt="Anteprima della foto" hidden>
+    <div class="cam-bar">
+      <button class="round-btn light" id="cam-close"><svg class="ic"><use href="#i-x"/></svg><span>Chiudi</span></button>
+      <button class="shutter" id="cam-shot" aria-label="Scatta"></button>
+      <button class="round-btn light" id="cam-flip"><svg class="ic"><use href="#i-flip"/></svg><span>Gira</span></button>
+      <button class="primary" id="cam-use" hidden>Usa questa foto</button>
+      <button class="round-btn light" id="cam-retake" hidden><svg class="ic"><use href="#i-repeat"/></svg><span>Rifai</span></button>
+    </div>
+    <p class="cam-hint" id="cam-hint">Inquadra la pagina, vicino e con buona luce.</p>
+  </div>
+</div>
+<input type="file" id="file-input" accept="image/*" capture="environment" hidden>
+
+<!-- Impostazioni -->
+<dialog id="dlg-settings">
+  <form method="dialog" class="dlg">
+    <h2>Impostazioni</h2>
+    <label class="field">Nome <input id="set-name" type="text" maxlength="30" autocomplete="off"></label>
+    <label class="field">Voce italiana
+      <select id="set-voice"><option value="">Automatica (consigliata)</option></select>
+    </label>
+    <label class="field">Velocità della voce <output id="set-rate-out">1.0×</output>
+      <input id="set-rate" type="range" min="0.7" max="1.3" step="0.05" value="1">
+    </label>
+    <label class="check"><input id="set-auto" type="checkbox"> Ascolta da sola quando ho finito di parlare</label>
+    <label class="check"><input id="set-captions" type="checkbox"> Mostra i sottotitoli</label>
+    <div class="dlg-actions">
+      <button type="button" class="link danger" id="set-wipe">Cancella dati da questo dispositivo</button>
+      <button class="primary">Fatto</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Cronologia -->
+<dialog id="dlg-history">
+  <form method="dialog" class="dlg">
+    <h2>La nostra conversazione</h2>
+    <div id="history-list" class="history"></div>
+    <div class="dlg-actions"><button class="primary">Chiudi</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

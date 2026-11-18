@@ -1,0 +1,4 @@
+node_modules/
+.env
+# Informazioni personali sulla studentessa (programma, difficoltà...): restano sul tuo computer.
+profilo.txt
