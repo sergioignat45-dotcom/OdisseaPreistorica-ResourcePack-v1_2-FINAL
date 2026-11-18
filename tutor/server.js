@@ -8,9 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
-import { buildSystemPrompt, leggiProfilo, MATERIE_VALIDE } from './prompt.js';
-import { sanitizeMessages, BadRequest } from './validate.js';
-import { demoReply, demoStream } from './demo.js';
+import { buildSystemPrompt, buildRecapPrompt, leggiProfilo, MATERIE_VALIDE, ATTIVITA_VALIDE } from './prompt.js';
+import { sanitizeMessages, transcript, BadRequest } from './validate.js';
+import { demoReply, demoStream, demoRecap } from './demo.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, 'public');
@@ -37,6 +37,8 @@ const cfg = {
   maxTokens: Number(process.env.MAX_TOKENS) || 4096,
   tutorName: process.env.TUTOR_NAME || 'Prof Claude',
   accessCode: process.env.ACCESS_CODE || '',
+  // FACE_CAMERA=off nasconde del tutto l'opzione "il tutor può vedermi" (webcam).
+  faceCamera: (process.env.FACE_CAMERA || '').toLowerCase() !== 'off',
   dailyLimit: Number(process.env.DAILY_LIMIT) || 300,
   demo:
     process.argv.includes('--demo') ||
@@ -145,7 +147,7 @@ function serveStatic(pathname, req, res) {
   });
 }
 
-// --- /api/chat --------------------------------------------------------------------------
+// --- /api/chat e /api/recap ---------------------------------------------------------------
 function messaggioDiErrore(err) {
   if (err instanceof Anthropic.AuthenticationError) return 'chiave';
   if (err instanceof Anthropic.RateLimitError) return 'limite';
@@ -153,22 +155,43 @@ function messaggioDiErrore(err) {
   return 'generico';
 }
 
-async function handleChat(req, res) {
+// Parametri comuni delle richieste a Claude.
+function claudeParams(extra) {
+  const params = {
+    model: cfg.model,
+    max_tokens: cfg.maxTokens,
+    cache_control: { type: 'ephemeral' }, // la conversazione cresce: il già-letto costa 10 volte meno
+    ...extra,
+  };
+  if (cfg.effort && SUPPORTS_EFFORT(cfg.model)) params.output_config = { effort: cfg.effort };
+  if (SUPPORTS_FALLBACK.has(cfg.model)) return { beta: true, params: { ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } };
+  return { beta: false, params };
+}
+
+// Controlli comuni: troppe richieste, codice di accesso, limite giornaliero. Restituisce true se si può procedere.
+function guard(req, res) {
   const ip = req.socket.remoteAddress || '?';
-  if (rateLimited(ip)) return json(res, 429, { error: 'Troppe richieste ravvicinate: aspetta qualche secondo.' });
+  if (rateLimited(ip)) return json(res, 429, { error: 'Troppe richieste ravvicinate: aspetta qualche secondo.' }), false;
   if (cfg.accessCode && !eguali(req.headers['x-access-code'] || '', cfg.accessCode)) {
-    return json(res, 401, { error: 'Codice di accesso mancante o sbagliato.', code: 'access' });
+    return json(res, 401, { error: 'Codice di accesso mancante o sbagliato.', code: 'access' }), false;
   }
   if (superatoLimiteGiornaliero()) {
-    return json(res, 429, { error: 'Per oggi abbiamo studiato tanto! Riprendiamo domani.', code: 'daily' });
+    return json(res, 429, { error: 'Per oggi abbiamo studiato tanto! Riprendiamo domani.', code: 'daily' }), false;
   }
+  return true;
+}
 
-  let messages, subject, studentName;
+async function handleChat(req, res) {
+  if (!guard(req, res)) return;
+
+  let messages, subject, activity, studentName, diary;
   try {
     const body = JSON.parse(await readBody(req, 14 * 1024 * 1024));
     messages = sanitizeMessages(body.messages);
     subject = MATERIE_VALIDE.includes(body.subject) ? body.subject : 'libero';
+    activity = ATTIVITA_VALIDE.includes(body.activity) ? body.activity : null;
     studentName = body.studentName;
+    diary = body.diary;
   } catch (e) {
     return json(res, 400, { error: e instanceof BadRequest ? e.message : 'Richiesta non valida' });
   }
@@ -198,24 +221,12 @@ async function handleChat(req, res) {
       tutorName: cfg.tutorName,
       studentName,
       subject,
+      activity,
+      diary,
       profile: leggiProfilo(import.meta.url),
     });
-
-    const params = {
-      model: cfg.model,
-      max_tokens: cfg.maxTokens,
-      system,
-      messages,
-      cache_control: { type: 'ephemeral' }, // la conversazione cresce: il già-letto costa 10 volte meno
-    };
-    if (cfg.effort && SUPPORTS_EFFORT(cfg.model)) params.output_config = { effort: cfg.effort };
-
-    let stream;
-    if (SUPPORTS_FALLBACK.has(cfg.model)) {
-      stream = client.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal: ac.signal });
-    } else {
-      stream = client.messages.stream(params, { signal: ac.signal });
-    }
+    const { beta, params } = claudeParams({ system, messages });
+    const stream = beta ? client.beta.messages.stream(params, { signal: ac.signal }) : client.messages.stream(params, { signal: ac.signal });
     stream.on('text', (text) => send({ type: 'text', text }));
 
     const final = await stream.finalMessage();
@@ -230,6 +241,44 @@ async function handleChat(req, res) {
   res.end();
 }
 
+// Riepilogo di fine lezione: una risposta breve, senza streaming. Le foto non vengono inviate.
+function parseRecap(text) {
+  const m = /PER LEI:\s*([\s\S]*?)\s*PER IL DIARIO:\s*([\s\S]*)$/i.exec(text);
+  const her = m ? m[1] : text.split(/\n{2,}/)[0];
+  const diary = m ? m[2] : text;
+  return { her: her.trim().slice(0, 600), diary: diary.trim().slice(0, 900) };
+}
+
+async function handleRecap(req, res) {
+  if (!guard(req, res)) return;
+  let messages, studentName;
+  try {
+    const body = JSON.parse(await readBody(req, 14 * 1024 * 1024));
+    messages = sanitizeMessages(body.messages, { requireLastUser: false }); // la lezione finisce di solito con il tutor
+    studentName = body.studentName;
+  } catch (e) {
+    return json(res, 400, { error: e instanceof BadRequest ? e.message : 'Richiesta non valida' });
+  }
+  try {
+    if (cfg.demo) return json(res, 200, demoRecap());
+    const text = transcript(messages, cfg.tutorName);
+    if (!text) return json(res, 400, { error: 'Non c’è ancora niente da riassumere.' });
+    const { beta, params } = claudeParams({
+      max_tokens: 2000,
+      system: buildRecapPrompt({ tutorName: cfg.tutorName, studentName }),
+      messages: [{ role: 'user', content: `<lezione>\n${text}\n</lezione>` }],
+    });
+    const msg = beta ? await client.beta.messages.create(params) : await client.messages.create(params);
+    console.log(`[recap] in=${msg.usage.input_tokens} out=${msg.usage.output_tokens} stop=${msg.stop_reason}`);
+    const out = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    if (!out.trim()) return json(res, 502, { error: 'Riepilogo non disponibile', kind: 'generico' });
+    return json(res, 200, parseRecap(out));
+  } catch (err) {
+    console.error('[recap] errore:', err?.status || '', err?.message || err);
+    return json(res, 502, { error: 'Riepilogo non disponibile', kind: messaggioDiErrore(err) });
+  }
+}
+
 // --- Avvio ------------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   securityHeaders(res);
@@ -240,10 +289,11 @@ const server = http.createServer(async (req, res) => {
         tutorName: cfg.tutorName,
         needsCode: Boolean(cfg.accessCode),
         demo: cfg.demo,
-        materie: MATERIE_VALIDE,
+        faceCamera: cfg.faceCamera,
       });
     }
     if (req.method === 'POST' && url.pathname === '/api/chat') return await handleChat(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/recap') return await handleRecap(req, res);
     if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(url.pathname, req, res);
     json(res, 405, { error: 'Metodo non consentito' });
   } catch (e) {

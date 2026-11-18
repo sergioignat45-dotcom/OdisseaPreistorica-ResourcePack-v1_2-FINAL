@@ -1,6 +1,7 @@
 // Il "direttore d'orchestra": collega microfono, voce, faccia, lavagna, fotocamera e server.
 import { Avatar } from './avatar.js';
 import { Speaker, Listener } from './voice.js';
+import { FaceCam } from './face.js';
 import { TagParser, SentenceChunker, cleanForSpeech } from './stream.js';
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +34,24 @@ const SUBJECT_PHRASE = {
   invalsi: 'Vorrei esercitarmi per le prove INVALSI.',
 };
 
+// "Cosa facciamo?": ognuna attiva un metodo di lavoro diverso (il testo vero è in prompt.js sul server).
+const ACTIVITIES = [
+  ['compiti', 'Compiti'],
+  ['studio', 'Studio'],
+  ['verifica', 'Verifica'],
+  ['interrogazione', 'Interrogazione'],
+  ['quiz', 'Quiz'],
+  ['scrivere', 'Scrivere'],
+];
+const ACTIVITY_PHRASE = {
+  compiti: 'Ho dei compiti da fare e vorrei una mano.',
+  studio: 'Vorrei studiare un argomento.',
+  verifica: 'Devo prepararmi per una verifica.',
+  interrogazione: "Fammi un'interrogazione.",
+  quiz: 'Facciamo un quiz veloce.',
+  scrivere: 'Devo scrivere un testo e vorrei aiuto.',
+};
+
 // ---------- memoria sul dispositivo (mai inviata a nessuno tranne il server di questa app) ----------
 const store = {
   get(area, key, fallback) {
@@ -54,8 +73,10 @@ const store = {
 
 const S = {
   cfg: { tutorName: 'Prof', needsCode: false, demo: false },
-  settings: { name: '', rate: 1, voiceURI: '', autoListen: true, captions: true, code: '', ...store.get('localStorage', 'tutor.settings', {}) },
+  settings: { name: '', rate: 1, voiceURI: '', autoListen: true, captions: true, code: '', face: false, ...store.get('localStorage', 'tutor.settings', {}) },
   subject: store.get('sessionStorage', 'tutor.subject', 'libero'),
+  activity: store.get('sessionStorage', 'tutor.activity', null),
+  diary: store.get('localStorage', 'tutor.diary', []), // [{d: 'AAAA-MM-GG', t: 'nota'}]
   messages: store.get('sessionStorage', 'tutor.msgs', []), // {role, text, local?, image?, hadImage?}
   phase: 'idle',
   pendingImage: null,
@@ -69,7 +90,7 @@ const saveMessages = () =>
   store.set(
     'sessionStorage',
     'tutor.msgs',
-    S.messages.slice(-60).map(({ image, ...m }) => ({ ...m, hadImage: Boolean(image) || m.hadImage })),
+    S.messages.slice(-60).map(({ image, face, ...m }) => ({ ...m, hadImage: Boolean(image) || m.hadImage })),
   );
 
 // ---------- piccoli aiuti ----------
@@ -102,6 +123,7 @@ const speaker = new Speaker({
   },
 });
 const listener = new Listener();
+const faceCam = new FaceCam($('self-video'));
 
 // ---------- fasi della conversazione ----------
 const PHASE_TEXT = {
@@ -167,7 +189,7 @@ function completeTurn(t) {
     saveMessages();
   }
   setPhase('idle');
-  if (S.settings.autoListen && listener.supported && $('typebar').hidden) {
+  if (!t.noListen && S.settings.autoListen && listener.supported && $('typebar').hidden) {
     setTimeout(() => {
       if (S.phase === 'idle' && !turn) startListening();
     }, 450);
@@ -175,8 +197,8 @@ function completeTurn(t) {
 }
 
 // Il tutor dice una frase "sua" (saluti, errori) senza chiamare l'intelligenza artificiale.
-function tutorSays(text) {
-  const t = { id: ++turnSeq, local: true, streamDone: true, raw: text, ctrl: new AbortController() };
+function tutorSays(text, { listenAfter = true } = {}) {
+  const t = { id: ++turnSeq, local: true, streamDone: true, raw: text, ctrl: new AbortController(), noListen: !listenAfter };
   turn = t;
   S.messages.push({ role: 'assistant', text, local: true });
   saveMessages();
@@ -204,14 +226,20 @@ function interrupt({ listenAfter = false } = {}) {
 }
 
 // ---------- invio di un messaggio e risposta in streaming ----------
-function buildPayload() {
+function buildPayload(withImages = true) {
   const recent = S.messages.filter((m) => !m.local).slice(-30);
   const withImg = recent.map((m, i) => (m.image ? i : -1)).filter((i) => i >= 0).slice(-2); // solo le ultime 2 foto
   return recent.map((m, i) => {
     if (m.role === 'assistant') return { role: 'assistant', content: m.text };
     const blocks = [];
-    if (m.image && withImg.includes(i)) {
+    if (withImages && m.image && withImg.includes(i)) {
+      blocks.push({ type: 'text', text: '[Foto del quaderno o libro, scattata da lei]' });
       blocks.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: m.image.split(',')[1] } });
+    }
+    if (withImages && m.face) {
+      // solo l'istantanea dell'ultimo messaggio: le precedenti non vengono mai rimandate
+      blocks.push({ type: 'text', text: '[Webcam: istantanea di lei mentre parla]' });
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: m.face.split(',')[1] } });
     }
     blocks.push({ type: 'text', text: m.text });
     return { role: 'user', content: blocks };
@@ -224,7 +252,9 @@ function sendUser(text) {
   interrupt();
   const image = S.pendingImage;
   clearAttachment();
-  S.messages.push({ role: 'user', text: text || 'Guarda questa foto, per favore.', image });
+  for (const m of S.messages) delete m.face; // le vecchie istantanee della webcam non si conservano
+  const face = faceCam.on ? faceCam.snapshot() : null;
+  S.messages.push({ role: 'user', text: text || 'Guarda questa foto, per favore.', image, face });
   saveMessages();
   $('heard').textContent = text;
   runTurn();
@@ -244,7 +274,13 @@ async function runTurn() {
       method: 'POST',
       headers,
       signal: t.ctrl.signal,
-      body: JSON.stringify({ messages: buildPayload(), subject: S.subject, studentName: S.settings.name }),
+      body: JSON.stringify({
+        messages: buildPayload(),
+        subject: S.subject,
+        activity: S.activity,
+        studentName: S.settings.name,
+        diary: S.diary.slice(-4),
+      }),
     });
     if (!resp.ok) {
       const info = await resp.json().catch(() => ({}));
@@ -472,15 +508,25 @@ let camStream = null;
 let camFacing = 'environment';
 const coarse = matchMedia('(pointer: coarse)').matches;
 
+let faceWasOn = false;
+function resumeFace() {
+  if (!faceWasOn) return;
+  faceWasOn = false;
+  setFace(true, { quiet: true });
+}
+
 async function openCamera() {
   // Sul telefono è meglio la fotocamera vera (messa a fuoco, alta qualità): la apre il file-input.
   if (coarse || !navigator.mediaDevices?.getUserMedia || !window.isSecureContext) return $('file-input').click();
   try {
+    faceWasOn = faceCam.on;
+    if (faceWasOn) faceCam.stop();
     await startCam();
     $('cam').hidden = false;
     camReset();
   } catch {
     stopCam();
+    resumeFace();
     toast('Non riesco ad accendere la fotocamera: scegli una foto dal dispositivo.');
     $('file-input').removeAttribute('capture');
     $('file-input').click();
@@ -518,6 +564,7 @@ $('btn-cam').onclick = () => {
 $('cam-close').onclick = () => {
   stopCam();
   $('cam').hidden = true;
+  resumeFace();
 };
 $('cam-flip').onclick = async () => {
   camFacing = camFacing === 'environment' ? 'user' : 'environment';
@@ -541,11 +588,28 @@ $('cam-use').onclick = () => {
   setAttachment($('cam-still').src);
   stopCam();
   $('cam').hidden = true;
+  resumeFace();
   photoReady();
 };
 
 // ---------- materie ----------
 function renderChips() {
+  const acts = $('activities');
+  acts.innerHTML = '';
+  for (const [id, label] of ACTIVITIES) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(S.activity === id));
+    b.onclick = () => {
+      S.activity = S.activity === id ? null : id; // un secondo tocco la spegne
+      store.set('sessionStorage', 'tutor.activity', S.activity);
+      renderChips();
+      if (S.started && S.activity) sendUser(ACTIVITY_PHRASE[id]);
+    };
+    acts.appendChild(b);
+  }
   const nav = $('subjects');
   nav.innerHTML = '';
   for (const [id, label] of SUBJECTS) {
@@ -573,7 +637,21 @@ function plainFromRaw(raw) {
   p.end();
   return { say: cleanForSpeech(say), board: board.trim() };
 }
+function renderDiary() {
+  const list = $('diary-list');
+  list.innerHTML = '';
+  $('diary-box').hidden = !S.diary.length;
+  for (const e of [...S.diary].reverse()) {
+    const div = document.createElement('div');
+    div.className = 'entry';
+    const b = document.createElement('b');
+    b.textContent = new Date(e.d + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+    div.append(b, e.t);
+    list.appendChild(div);
+  }
+}
 $('btn-history').onclick = () => {
+  renderDiary();
   const list = $('history-list');
   list.innerHTML = '';
   if (!S.messages.length) list.innerHTML = '<p class="muted">Non abbiamo ancora parlato.</p>';
@@ -621,6 +699,7 @@ function openSettings() {
   $('set-auto').checked = S.settings.autoListen;
   $('set-captions').checked = S.settings.captions;
   $('set-voice').value = S.settings.voiceURI;
+  $('set-face').checked = faceCam.on;
   $('dlg-settings').showModal();
 }
 $('btn-settings').onclick = openSettings;
@@ -633,6 +712,7 @@ $('dlg-settings').addEventListener('close', () => {
   S.settings.captions = $('set-captions').checked;
   applySettings();
   saveSettings();
+  if (S.cfg.faceCamera && $('set-face').checked !== faceCam.on) setFace($('set-face').checked);
 });
 $('set-wipe').onclick = () => {
   if (!confirm('Cancellare nome, impostazioni e conversazione da questo dispositivo?')) return;
@@ -650,18 +730,117 @@ function applySettings() {
   $('caption').hidden = !S.settings.captions;
 }
 
-// ---------- nuova lezione ----------
-$('btn-new').onclick = () => {
-  if (S.messages.length && !confirm('Iniziare una nuova lezione? La conversazione attuale verrà chiusa.')) return;
+// ---------- nuova lezione e riepilogo ----------
+function newLesson() {
   interrupt();
   S.messages = [];
   saveMessages();
   clearAttachment();
   $('caption').textContent = '';
+  $('heard').textContent = '';
   $('board').innerHTML = '';
   $('board-wrap').dataset.empty = 'true';
   beginLesson();
+}
+$('set-new').onclick = () => {
+  if (S.messages.length && !confirm('Iniziare una nuova lezione senza riepilogo? La conversazione attuale verrà chiusa.')) return;
+  $('dlg-settings').close();
+  newLesson();
 };
+
+const isoToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// "Finiamo qui": il tutor riassume la lezione. A lei dice due frasi; ai grandi lascia una nota nel diario,
+// che resta su questo dispositivo e dalla lezione dopo viene usata per ripartire da dove eravate.
+async function endLesson() {
+  if (!S.started) return;
+  if (S.messages.filter((m) => m.role === 'user').length < 2) {
+    toast('Studiamo ancora un po’, poi facciamo il riepilogo!');
+    return;
+  }
+  interrupt();
+  setPhase('thinking');
+  $('status').textContent = 'Scrivo il riepilogo…';
+  let recap;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (S.settings.code) headers['x-access-code'] = S.settings.code;
+    const resp = await fetch('/api/recap', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ messages: buildPayload(false), studentName: S.settings.name }),
+    });
+    const info = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (info.code === 'access') showStart('Il codice di accesso non è giusto: riprova.');
+      throw new Error(info.error || 'Errore');
+    }
+    recap = info;
+  } catch {
+    setPhase('idle');
+    toast('Non riesco a fare il riepilogo adesso. Riprova tra poco.');
+    return;
+  }
+  S.diary = [...S.diary, { d: isoToday(), t: recap.diary }].slice(-10);
+  store.set('localStorage', 'tutor.diary', S.diary);
+  $('recap-her').textContent = recap.her;
+  $('recap-diary').textContent = recap.diary;
+  setPhase('idle');
+  $('dlg-recap').returnValue = '';
+  $('dlg-recap').showModal();
+  tutorSays(recap.her, { listenAfter: false });
+}
+$('btn-end').onclick = endLesson;
+$('dlg-recap').addEventListener('close', () => {
+  const v = $('dlg-recap').returnValue;
+  interrupt();
+  if (v === 'new') newLesson();
+});
+
+// ---------- webcam: gli "occhi" del tutor (solo se lei lo sceglie) ----------
+function syncFaceUI() {
+  const on = faceCam.on;
+  $('selfview').hidden = !on;
+  $('btn-eye').classList.toggle('on', on);
+  $('btn-eye').setAttribute('aria-pressed', String(on));
+  $('btn-eye').firstElementChild.firstElementChild.setAttribute('href', on ? '#i-eye' : '#i-eye-off');
+}
+async function setFace(on, { quiet = false } = {}) {
+  if (on) {
+    if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
+      if (!quiet) toast('Qui non posso accendere la webcam: serve una connessione sicura (https).');
+      on = false;
+    } else {
+      try {
+        await faceCam.start();
+        // se il permesso viene tolto o la webcam si stacca, spegniamo tutto in modo pulito
+        faceCam.stream.getVideoTracks()[0].addEventListener('ended', () => {
+          faceCam.stop();
+          S.settings.face = false;
+          saveSettings();
+          syncFaceUI();
+        });
+      } catch {
+        faceCam.stop();
+        toast('Non riesco ad accendere la webcam. Controlla il permesso del browser.');
+        on = false;
+      }
+    }
+  } else faceCam.stop();
+  S.settings.face = faceCam.on;
+  saveSettings();
+  syncFaceUI();
+}
+$('btn-eye').onclick = () => setFace(!faceCam.on);
+$('self-off').onclick = () => setFace(false);
+// Quando si torna sulla pagina (es. dopo aver usato la fotocamera del telefono) la webcam va riavviata.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !S.started || !S.settings.face || !$('cam').hidden) return;
+  if (faceCam.on && !faceCam.live) await setFace(true, { quiet: true });
+});
 
 // ---------- inizio ----------
 function beginLesson() {
@@ -670,7 +849,7 @@ function beginLesson() {
   tutorSays(
     resumed
       ? `Rieccoci${n ? ', ' + n : ''}! Riprendiamo da dove eravamo, oppure cambiamo argomento?`
-      : `Ciao${n ? ' ' + n : ''}! Io sono ${S.cfg.tutorName}. Su cosa lavoriamo oggi? Puoi parlarmi, scrivermi, oppure mostrarmi una pagina del quaderno con la fotocamera.`,
+      : `Ciao${n ? ' ' + n : ''}! Io sono ${S.cfg.tutorName}. Possiamo fare i compiti, studiare un argomento o prepararti a una verifica: dimmi tu da dove partiamo. Puoi parlarmi, scrivermi o mostrarmi il quaderno.`,
   );
 }
 
@@ -696,11 +875,13 @@ $('start-form').onsubmit = (e) => {
     if (code) S.settings.code = code;
     if (!S.settings.code) return ($('compat-note').textContent = 'Serve il codice di accesso.'), ($('compat-note').hidden = false);
   }
+  S.settings.face = S.cfg.faceCamera && $('start-face').checked;
   saveSettings();
   S.started = true;
   $('start').hidden = true;
   // Il saluto parte subito, dentro il tocco dell'utente: così il browser concede l'audio.
   beginLesson();
+  if (S.settings.face) setFace(true);
 };
 
 async function boot() {
@@ -713,6 +894,12 @@ async function boot() {
   $('demo-badge').hidden = !S.cfg.demo;
   document.title = `Studiamo con ${S.cfg.tutorName}`;
   $('start-name').value = S.settings.name;
+  const canSee = S.cfg.faceCamera;
+  $('face-opt').hidden = $('face-note').hidden = !canSee;
+  $('btn-eye').hidden = !canSee;
+  $('set-face-row').hidden = !canSee;
+  $('start-face').checked = canSee && S.settings.face;
+  if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) $('start-face').disabled = true;
   renderChips();
   applySettings();
   setPhase('idle');

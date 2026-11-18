@@ -45,3 +45,10 @@ export async function* demoStream(text, signal) {
     await new Promise((r) => setTimeout(r, 18));
   }
 }
+
+export function demoRecap() {
+  return {
+    her: 'Per oggi abbiamo finito: sei stata bravissima a provare da sola e a fare domande. La prossima volta ripassiamo insieme gli ultimi esercizi e facciamo un mini quiz. Questo è solo un riepilogo di prova della modalità demo.',
+    diary: 'Modalità demo: nessuna lezione vera. Con la chiave API qui compariranno argomenti trattati, punti forti, punti deboli, cosa ripassare e le verifiche nominate.',
+  };
+}
